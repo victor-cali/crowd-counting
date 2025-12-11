@@ -210,7 +210,7 @@ def main():
             valid_mask=get_valid_area_mask(),
             bg_log=compute_background_log(),
             sigma=1.8,
-            nms_radius=9,
+            nms_radius=10,
             response_threshold=155,
             min_area=47,
             max_area=58,
