@@ -212,7 +212,7 @@ def main():
             sigma=1.8,
             nms_radius=9,
             response_threshold=155,
-            min_area=45,
+            min_area=47,
             max_area=58,
             clahe_clip=2,
             clahe_grid=(8, 8)
