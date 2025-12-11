@@ -8,7 +8,7 @@ import numpy as np
 from utils import list_images, load_image, find_annotation_csv, parse_makesense_csv, overlay_points
 from preprocess import apply_clahe
 from detection import detect_people_via_subtraction
-from detection_log import detect_heads_log2
+from detection_log import detect_heads_log2, detect_heads_log
 from evaluation import compute_image_level_mse, person_level_metrics
 import matplotlib.pyplot as plt
 
@@ -205,15 +205,15 @@ def main():
         gray = load_image(p, gray=True)
 
         # detect
-        pts, boxes, mask = detect_heads_log2(
+        pts, boxes, mask = detect_heads_log(
             gray,
             valid_mask=get_valid_area_mask(),
             bg_log=compute_background_log(),
-            sigma=2,
+            sigma=1.8,
             nms_radius=6,
-            response_threshold=90,
+            response_threshold=155,
             min_area=5,
-            max_area=65,
+            max_area=60,
             clahe_clip=2,
             clahe_grid=(8, 8)
         )
