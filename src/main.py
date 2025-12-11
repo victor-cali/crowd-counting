@@ -1,12 +1,14 @@
 # src/main.py
 import glob
 import os
+import json
 from pathlib import Path
 import cv2
 import numpy as np
 from utils import list_images, load_image, find_annotation_csv, parse_makesense_csv, overlay_points
 from preprocess import apply_clahe
 from detection import detect_people_via_subtraction
+from detection_log import detect_heads_log2
 from evaluation import compute_image_level_mse, person_level_metrics
 import matplotlib.pyplot as plt
 
@@ -22,9 +24,6 @@ MAX_AREA_FAR = MAX_AREA//4
 # --------------------------
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-def list_images(img_glob="imatges/*.jpg"):
-    return sorted(glob.glob(img_glob))
 
 # -------------------------------
 # Bounding box evaluation function
@@ -48,6 +47,105 @@ def evaluate_boxes(gt_points, pred_boxes):
     fn = len(gt_points) - tp
 
     return tp, fp, fn
+
+# -------------------------------
+# Bounding box evaluation function
+# -------------------------------
+def get_valid_area_mask() -> np.ndarray:
+    json_path: str = '/Dev/Image-and-Video-Analysis/crowd-counting/data/invalid_region.json'
+    width = 1920
+    height = 1080
+
+    # Load COCO JSON
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    ann = data["annotations"][0]
+    poly = np.array(ann["segmentation"][0]).reshape(-1, 2).astype(np.int32)
+
+    # Create all-ones mask (valid region)
+    valid_mask = np.ones((height, width), dtype=np.uint8)
+
+    # Fill polygon as invalid region
+    invalid_region = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(invalid_region, [poly], 255)
+
+    # Remove invalid region from valid region
+    valid_mask[invalid_region == 255] = 0  # 0 = invalid, 1 = valid
+
+    return valid_mask
+
+
+def compute_background_log(
+    sigma: float = 2.0,
+    clahe_clip: float = 2.0,
+    clahe_grid: tuple = (8, 8),
+) -> np.ndarray:
+    """
+    Computes the background LoG (Laplacian-of-Gaussian approximation)
+    from a list of empty-beach image paths.
+
+    This helps Variant B subtract repetitive background textures
+    (sand patterns, static objects) from LoG responses.
+
+    Parameters
+    ----------
+    image_paths : List[str]
+        List of file paths to empty background images.
+    sigma : float
+        Gaussian sigma for LoG scale selection.
+    clahe_clip : float
+        CLAHE contrast clip value.
+    clahe_grid : tuple
+        CLAHE tile grid size.
+
+    Returns
+    -------
+    bg_log : np.ndarray (H, W), float32
+        Averaged LoG response of the empty images.
+    """
+
+    image_paths = [
+        '/Dev/Image-and-Video-Analysis/crowd-counting/imatges/1660798800.jpg',
+        '/Dev/Image-and-Video-Analysis/crowd-counting/imatges/1660802400.jpg'
+    ]
+    
+    log_list = []
+
+    # Gaussian kernel size derived from sigma
+    ksize = int(6 * sigma) | 1
+
+    # Prepare CLAHE
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)
+
+    for path in image_paths:
+        img = cv2.imread(path)
+        if img is None:
+            raise FileNotFoundError(f"Cannot load image: {path}")
+
+        # 1. Grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 2. CLAHE enhancement
+        gray_clahe = clahe.apply(gray)
+
+        # 3. Gaussian blur (scale selection)
+        blurred = cv2.GaussianBlur(gray_clahe, (ksize, ksize), sigmaX=sigma)
+
+        # 4. Laplacian → LoG approximation
+        lap = cv2.Laplacian(blurred.astype(np.float32), cv2.CV_32F, ksize=3)
+
+        # Invert Laplacian sign to make blob centers positive
+        log_resp = -lap
+
+        log_list.append(log_resp)
+
+    # ----------------------------------------------------------------------
+    # Average all LoG responses into the final bg_log
+    # ----------------------------------------------------------------------
+    bg_log = np.mean(log_list, axis=0).astype(np.float32)
+
+    return bg_log
 
 
 
@@ -107,21 +205,17 @@ def main():
         gray = load_image(p, gray=True)
 
         # detect
-        pts, boxes, mask = detect_people_via_subtraction(
+        pts, boxes, mask = detect_heads_log2(
             gray,
-            empty_imgs[0],  # bg1
-            empty_imgs[1],  # bg2
-            mean_bg,
-            region_mask=region_mask,
-            probability_map=probability_map,
-            use_clahe=True,
-            blur_ksize=5,
-            thresh_method='otsu',
-            min_area=MIN_AREA,
-            min_area_map=np.linspace(MIN_AREA_FAR, MIN_AREA, h).astype(np.int32),
-            max_area=MAX_AREA,
-            max_area_map=np.linspace(MAX_AREA_FAR, MAX_AREA, h).astype(np.int32),
-            morph_kernel_size=3
+            valid_mask=get_valid_area_mask(),
+            bg_log=compute_background_log(),
+            sigma=2,
+            nms_radius=6,
+            response_threshold=90,
+            min_area=5,
+            max_area=65,
+            clahe_clip=2,
+            clahe_grid=(8, 8)
         )
 
         pred_count = len(boxes)
